@@ -20,6 +20,7 @@ sidebar-avatar: /img/avatar.jpeg      # use absolute URL, seeing it's used in bo
 RSS: false
 # weibo_username:     
 zhihu_username:     kinsomy
+juejin_username:     5ab89278f265da23a0498d65
 github_username:    kinsomyjs
 # facebook_username:  kinsomy
 # jianshu_username:   
@@ -86,7 +87,7 @@ ba_track_id: 74c3d472b664a792fcd971da4663ca4b
 
 # Featured Tags
 featured-tags: true                     # 是否使用首页标签
-featured-condition-size: 1              # 相同标签数量大于这个数，才会出现在首页
+featured-condition-size: 0              # 相同标签数量大于这个数，才会出现在首页
 
 
 
