@@ -63,11 +63,11 @@ disqus_username: kinsomy
 # Gitalk
 gitalk:
   enable: true    #是否开启Gitalk评论
-  clientID:                             #生成的clientID
-  clientSecret:     #生成的clientSecret
-  repo:     #仓库名称
-  owner:     #github用户名
-  admin: 
+  clientID:    69d67ec785a5756f63e1                         #生成的clientID
+  clientSecret:  6c95c83eb4d634a2cb7308efb3c3fefd383c02de   #生成的clientSecret
+  repo:  KinsomyJS.github.io   #仓库名称
+  owner:  kinsomyjs   #github用户名
+  admin:  kinsomyjs
   distractionFreeMode: true #是否启用类似FB的阴影遮罩
 
 
