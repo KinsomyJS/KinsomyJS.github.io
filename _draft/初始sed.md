@@ -46,7 +46,7 @@ sed -f script.sed data.txt
 
 ## 2 sed基础
 
-### 2.1更多替换选项
+### 2.1替换标记
 上面的例子`echo "hi,my name is xxx" | sed 's/xxx/kinsomy/'`只会替换每一行中匹配到的第一个数据，但是一行数据中若有多个匹配项，则不能全部被替换掉。
 
 ``` shell
@@ -91,4 +91,85 @@ hi,my name is kinsomy, i am xxx
 echo "hi,my name is xxx, i am xxx" | sed 's/xxx/kinsomy/w output.txt'
 ```
 
+### 2.3 行寻址
+上文说到sed命令是一行行读取文本，进行匹配操作数据，知道所有行被遍历完，如果这时候我们想要对特定的行做操作就要使用*行寻址*。
+行寻址有两种形式：
+
+* 数字形式表示行
+
+```shell
+# 操作单行
+$ sed '2s/xxx/***/' data.txt
+
+# 操作一定行区间[2,4]
+$ sed '2,4s/xxx/***/' data.txt
+
+# 操作某行开始到最后[2,endline]
+$ sed '2,$s/xxx/***/' data.txt
+```
+
+* 文本模式过滤器
+
+首先在/etc/passwd内找到kinsomy的记录，然后将bash替换为csh。文本模式过滤器配合正则表达式会很强大。
+```shell
+sed '/kinsomy/s/bash/csh/' /etc/passwd
+```
+
+### 2.4 删除行
+使用删除命令d对文本进行删除操作。
+
+```shell
+# 删除所有文本
+sed 'd' data.txt
+
+# 删除单行
+sed '2d' data.txt
+
+# 删除行区间[2,3]
+sed '2,3d' data.txt
+
+# 删除行区间[2,endline]
+sed '2,$d' data.txt
+
+# 删除匹配文本aa的行
+sed '/aa/d' data.txt
+
+# 删除两个匹配文本之间的文本 匹配到1和3的行之间的文本全部被删除
+sed '/1/,/3/d' data.txt
+```
+
+### 2.5 插入、附加文本
+* 插入命令i在指定行前增加新行
+* 附加命令a在指定行后增加新行
+
+```shell
+# 追加
+echo "Line 2" | sed 'a\
+pipe quote> Line 1'
+
+#插入
+echo "Line 2" | sed 'i\
+pipe quote> Line 1'
+```
+
+
+### 2.6 修改行
+c命令用来修改一行数据
+```shell
+# 修改第三行文本
+sed '3c\
+pipe quote> change line ' data.txt
+```
+
+### 2.7 转换命令
+命令格式 
+sed 'y/inchar/outchar'
+
+将inchar中的字符一一对应地转换成outchar的字符
+```shell
+echo "This 1 is a test of 1 try." | sed 'y/123/456/'
+
+# 输出
+This 4 is a test of 4 try.
+```
 
