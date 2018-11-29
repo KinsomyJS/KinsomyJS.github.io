@@ -1,9 +1,9 @@
 ---
 layout:     post                    # 使用的布局（不需要改）
 title:      ConstraintLayout使用详解 上             # 标题 
-subtitle:   ConstraintLayout使用详解  #副标题
-date:       2018-11-22              # 时间
-author:     2017-12-27                     # 作者
+subtitle:   ConstraintLayout  #副标题
+date:       2017-12-27              # 时间
+author:     kinsomy                     # 作者
 header-img:    #这篇文章标题背景图片
 catalog: true                       # 是否归档
 tags:                               #标签   
