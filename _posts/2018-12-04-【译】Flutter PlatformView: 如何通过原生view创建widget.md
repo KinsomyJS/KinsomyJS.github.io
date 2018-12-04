@@ -1,7 +1,7 @@
 ---
 layout:     post                    # 使用的布局（不需要改）
-title:      【译】Flutter PlatformView: 如何通过原生view创建widget               # 标题 
-subtitle:   Flutter PlatformView #副标题
+title:   Flutter Platform:如何通过原生view创建widget                # 标题 
+subtitle:   Flutter PlatformView  #副标题
 date:       2018-12-04              # 时间
 author:     Kinsomy                      # 作者
 header-img:    #这篇文章标题背景图片
