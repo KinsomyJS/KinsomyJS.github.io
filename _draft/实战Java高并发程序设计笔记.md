@@ -67,4 +67,18 @@ t1.start();
 t1.interrupt();
 ```
 
+### 4.wait和notify
 
+这两个方法不存在`Thread`类中，还是在`Object`里，所有对象都可以调用这两个方法。
+
+```java
+public final void wait() throws InterruptedException
+public final native void notify()
+```
+在一个线程A中调用了obj.wait()方法后，线程A会被阻塞变成等待状态，直到有其他线程调用obj.notify()之后才会继续执行。
+
+wait()方法的调用是会将调用所在线程放到obj对象的等待队列里面，这个队列会保存同一对象调用wait方法的多个线程，当调用obj.notify()之后，会在队列里`随机选择`一个线程唤醒继续执行。还有一个notifyAll()的方法，它就会唤醒所有在该队列内的线程。
+
+查看源码可以在wait()和notify()方法的的注释里看到，调用wait的当前线程必须持有对象的监视器，也就是需要被`synchronzied`包裹，调用wait和notify之前获取监视器，调用完之后随即释放。这样做是为了不阻碍其他在object等待的线程执行。
+
+`wait和sleep的区别是：wait被调用后会释放目标对象的锁，sleep不会释放任何资源。`
