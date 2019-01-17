@@ -82,3 +82,51 @@ wait()方法的调用是会将调用所在线程放到obj对象的等待队列�
 查看源码可以在wait()和notify()方法的的注释里看到，调用wait的当前线程必须持有对象的监视器，也就是需要被`synchronzied`包裹，调用wait和notify之前获取监视器，调用完之后随即释放。这样做是为了不阻碍其他在object等待的线程执行。
 
 `wait和sleep的区别是：wait被调用后会释放目标对象的锁，sleep不会释放任何资源。`
+
+### 5.suspend和resume
+不推荐使用suspend挂起线程，这是一个已经被标注为废弃的方法，原因是因为suspend在挂起线程时不会释放任何的锁资源，导致其他线程想要访问被占用的锁时都会阻塞住，直到执行了resume操作，才会继续执行。
+
+同时，由于suspend和resume存在时序问题，必须要限制性suspend再执行resume，一旦resume被提前执行了，就会造成死锁。
+
+![](https://github.com/KinsomyJS/KinsomyJS.github.io/blob/master/img/Concurrent_Action/suspend1.png?raw=true)
+
+### 6.join和yield
+join是等待线程结束，一个线程的输入需要依赖其他线程的输出，所以要等他其他线程结果出来再继续执行，这个时候使用join。
+```java
+//无限等待，一直阻塞线程
+public final void join() throws InterruptedException
+//限时等待，过时不候
+public final synchronized void join(long millis) throws InterruptedException
+```
+查看join()源码:
+```java
+    public final synchronized void join(long var1) throws InterruptedException {
+        long var3 = System.currentTimeMillis();
+        long var5 = 0L;
+        if (var1 < 0L) {
+            throw new IllegalArgumentException("timeout value is negative");
+        } else {
+            if (var1 == 0L) {
+                while(this.isAlive()) {
+                    this.wait(0L);
+                }
+            } else {
+                while(this.isAlive()) {
+                    long var7 = var1 - var5;
+                    if (var7 <= 0L) {
+                        break;
+                    }
+
+                    this.wait(var7);
+                    var5 = System.currentTimeMillis() - var3;
+                }
+            }
+
+        }
+    }
+```
+实际上就是在当前线程实例调用wait()方法，执行完成后会调用notifyAll()方法通知其他线程继续执行。
+
+`注意：不要在线程上再使用wait和notify，会导致混乱。`
+
+yield会让调用线程让出cpu占用，然后后续参与cpu的资源竞争，适合一些优先级低，当前不太需要cpu占用的情况。
