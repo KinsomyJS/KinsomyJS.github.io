@@ -130,3 +130,5 @@ public final synchronized void join(long millis) throws InterruptedException
 `注意：不要在线程上再使用wait和notify，会导致混乱。`
 
 yield会让调用线程让出cpu占用，然后后续参与cpu的资源竞争，适合一些优先级低，当前不太需要cpu占用的情况。
+
+
