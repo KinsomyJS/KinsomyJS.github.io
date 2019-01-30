@@ -2,7 +2,7 @@
 layout:     post                    # 使用的布局（不需要改）
 title:   Android进阶(一)View体系          # 标题 
 subtitle:   Android advance #副标题
-date:       2019-01-29            # 时间
+date:       2018-07-03            # 时间
 author:     Kinsomy                      # 作者
 header-img:    #这篇文章标题背景图片
 catalog: true                       # 是否归档
