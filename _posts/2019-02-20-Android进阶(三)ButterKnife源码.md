@@ -66,8 +66,7 @@ class ExampleActivity extends Activity {
 
 * @Retention(RUNTIME) 运行时注解，JVM运行程序会保留注解信息,需要通过反射获取注解信息。
 
-ButterKnife在9.0之前一直是用的编译时注解，9.0开始转为使用新的运行时注解。
-## 4 ButterKnife8.x版本分析
+## 4 ButterKnife源码分析
 ### 4.1 自定义注解
 ```java
 @Retention(CLASS) @Target(FIELD)
@@ -253,7 +252,7 @@ private BindingSet.Builder getOrCreateBindingBuilder(
 	return builder;
 }
 
-  static Builder newBuilder(TypeElement enclosingElement) {
+static Builder newBuilder(TypeElement enclosingElement) {
     String packageName = getPackage(enclosingElement).getQualifiedName().toString();
     String className = enclosingElement.getQualifiedName().toString().substring(
         packageName.length() + 1).replace('.', '$');
@@ -261,7 +260,7 @@ private BindingSet.Builder getOrCreateBindingBuilder(
 
     boolean isFinal = enclosingElement.getModifiers().contains(Modifier.FINAL);
     return new Builder(targetType, bindingClassName, isFinal, isView, isActivity, isDialog);
-  }
+}
 ```
 
 ### 4.4 _ViewBinding文件
@@ -310,3 +309,58 @@ public static View findRequiredView(View source, @IdRes int id, String who) {
 }
 ```
 这里有两个构造方法，其中MainActivity_ViewBinding(MainActivity target, View source)就对应于上文用反射来构造Unbinder实例的`constructor.newInstance`方法,而source就是传进来的DecorView，通过`findRequiredViewAsType`去找到textview控件并复制给Activity的成员变量`mTextView`。这样通过ButterKnife就可以把xml里的控件和变量绑定起来了，`findRequiredViewAsType`最后实际就是调用了`findViewById`。
+
+## 5 新增特性
+ButterKnife在版本9.0.0之后加入了基于运行时注解的库[butterknife-reflect](https://github.com/JakeWharton/butterknife/tree/master/butterknife-reflect),可以通过反射去处理注解信息，但是根据readme的说明，JakeWharton不推荐在生产模式下使用，因为运行时注解每次通过反射去处理太消耗性能了，只能在开发时提高编译速度用，不需要在用apt。
+```
+Er, what? Why would I want this?
+--------------------------------
+
+The normal `butterknife` artifact requires the use of `butterknife-compiler` as an annotation
+processor for compile-time validation of your bindings and code generation for runtime performance.
+This is a desirable feature for your CI and release builds, but it slows down iterative development.
+By using `butterknife-reflect` for only your IDE builds, you have one less annotation processor
+sitting between you and your running app. This is especially important for Kotlin-only or
+Java/Kotlin mixed projects using KAPT. And if `butterknife-compiler` is your only annotation
+processor for a module, using `butterknife-reflect` means that **zero** annotation processors run
+during development.
+
+
+Can I use this in production?
+-----------------------------
+
+No.
+
+Well technically you _can_, but don't. It's slow, inefficient, and lacks the level of validation
+that normal Butter Knife usage provides.
+
+```
+### 5.1 使用方式
+-----
+Kotlin modules:
+```groovy
+dependencies {
+  if (properties.containsKey('android.injected.invoked.from.ide')) {
+    implementation 'com.jakewharton:butterknife-reflect:<version>'
+  } else {
+    implementation 'com.jakewharton:butterknife:<version>'
+    kapt 'com.jakewharton:butterknife-compiler:<version>'
+  }
+}
+```
+Java modules:
+```groovy
+dependencies {
+  if (properties.containsKey('android.injected.invoked.from.ide')) {
+    implementation 'com.jakewharton:butterknife-reflect:<version>'
+  } else {
+    implementation 'com.jakewharton:butterknife:<version>'
+    annotationProcessor 'com.jakewharton:butterknife-compiler:<version>'
+  }
+}
+```
+
+## 6 参考资料
+* 《Android进阶之光》
+* [ButterKnife github](https://github.com/JakeWharton/butterknife)
+
