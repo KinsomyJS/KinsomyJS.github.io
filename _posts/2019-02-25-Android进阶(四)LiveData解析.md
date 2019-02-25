@@ -233,7 +233,159 @@ Transformations.map(batteryLiveData, new Function<Integer, String>() {
 		});
 ```
 
-## 5 参考资料
+## 5 源码解析
+下面来分析一下LiveData的关键源码。先从LiveData类开始：
+LiveData里面主要有几个上面用到的方法，`observe`,`setValue`,`postValue`,`onActive`,`onInactive`等，挨个来分析。
+
+### 5.1 observe()
+```java
+    @MainThread
+    public void observe(@NonNull LifecycleOwner owner, @NonNull Observer<T> observer) {
+        if (owner.getLifecycle().getCurrentState() == DESTROYED) {
+            // ignore
+            return;
+        }
+        LifecycleBoundObserver wrapper = new LifecycleBoundObserver(owner, observer);
+        ObserverWrapper existing = mObservers.putIfAbsent(observer, wrapper);
+        if (existing != null && !existing.isAttachedTo(owner)) {
+            throw new IllegalArgumentException("Cannot add the same observer"
+                    + " with different lifecycles");
+        }
+        if (existing != null) {
+            return;
+        }
+        owner.getLifecycle().addObserver(wrapper);
+    }
+
+public interface LifecycleOwner {
+    @NonNull
+    Lifecycle getLifecycle();
+}
+```
+observe有两个参数，第一个是`LifecycleOwner`,[Fragment](https://developer.android.com/reference/android/support/v4/app/Fragment)和[FragmentActivity](https://developer.android.com/reference/android/support/v4/app/FragmentActivity.html)等都实现了该接口，因此我们在调用的时候就可以直接传入this，它里面有一个方法可以获得当前的Lifecycle实例，`Lifecycle`里面保存了和生命周期相对应的状态。
+
+observe方法首先先判断当前状态是不是`DESTROYED`,如果是就可以完全忽略，因为已经说过只对处于活跃状态的组件做更新；接着将owner observer构造成`LifecycleBoundObserver`实例，这是一个内部类，里面有关于状态变换的一系列操作，待会详细分析；然后将observer和wrapper存入map缓存中，如果observer缓存已存在并且已经和另一个`LifecycleOwner`绑定，则抛出异常；如果缓存已经存在则直接忽略；最后调用addObserver方法将`LifecycleBoundObserver`实例和`LifecycleOwner`绑定。而addObserver是调用了`LifecycleRegistry`类的实现。
+
+### 5.2 ObserverWrapper
+```java
+private abstract class ObserverWrapper {
+        final Observer<T> mObserver;
+        boolean mActive;
+        int mLastVersion = START_VERSION;
+
+        ObserverWrapper(Observer<T> observer) {
+            mObserver = observer;
+        }
+
+        abstract boolean shouldBeActive();
+
+        boolean isAttachedTo(LifecycleOwner owner) {
+            return false;
+        }
+
+        void detachObserver() {
+        }
+
+        void activeStateChanged(boolean newActive) {
+            if (newActive == mActive) {
+                return;
+            }
+            // immediately set active state, so we'd never dispatch anything to inactive
+            // owner
+            mActive = newActive;
+            boolean wasInactive = LiveData.this.mActiveCount == 0;
+            LiveData.this.mActiveCount += mActive ? 1 : -1;
+			//过去是inactive，现在是active
+            if (wasInactive && mActive) {
+                onActive();
+            }
+			//过去没有订阅，并且现在是inactive
+            if (LiveData.this.mActiveCount == 0 && !mActive) {
+                onInactive();
+            }
+			//现在是active
+            if (mActive) {
+                dispatchingValue(this);
+            }
+        }
+    }
+class LifecycleBoundObserver extends ObserverWrapper implements GenericLifecycleObserver {
+	...
+    @Override
+    public void onStateChanged(LifecycleOwner source, Lifecycle.Event event) {
+        if (mOwner.getLifecycle().getCurrentState() == DESTROYED) {
+            removeObserver(mObserver);
+            return;
+        }
+        activeStateChanged(shouldBeActive());
+    }
+}
+```
+ObserverWrapper里面封装了关于状态的操作，包括判断是否处于活跃状态、observer是否绑定到lifecycleowner以及更改activity状态等。
+
+activeStateChanged首先判断新来的状态和旧状态是否相同，相同则忽略，然后判断LiveData上的活跃态的数量是否为0，为0说明之前处于Inactive，然后统计现在的订阅数，接着就是三个if判断，注释在代码里。正式这三个判断，LiveData可以接收到onActive和onInactive的回调。
+
+dispatchingValue(this)是当状态变为active时调用，用来更新数据。里面会用到considerNotify方法。
+
+### 5.3 setValue postValue
+```java
+private final Runnable mPostValueRunnable = new Runnable() {
+    @Override
+    public void run() {
+        Object newValue;
+        synchronized (mDataLock) {
+            newValue = mPendingData;
+            mPendingData = NOT_SET;
+        }
+        //noinspection unchecked
+        setValue((T) newValue);
+    }
+};
+protected void postValue(T value) {
+    boolean postTask;
+    synchronized (mDataLock) {
+        postTask = mPendingData == NOT_SET;
+        mPendingData = value;
+    }
+    if (!postTask) {
+        return;
+    }
+    ArchTaskExecutor.getInstance().postToMainThread(mPostValueRunnable);
+}
+
+
+@MainThread
+protected void setValue(T value) {
+    assertMainThread("setValue");
+    mVersion++;
+    mData = value;
+    dispatchingValue(null);
+}
+
+private void considerNotify(ObserverWrapper observer) {
+    if (!observer.mActive) {
+        return;
+    }
+    if (!observer.shouldBeActive()) {
+        observer.activeStateChanged(false);
+        return;
+    }
+    if (observer.mLastVersion >= mVersion) {
+        return;
+    }
+    observer.mLastVersion = mVersion;
+    //noinspection unchecked
+    observer.mObserver.onChanged((T) mData);
+}
+```
+
+setValue会调用dispatchingValue方法，接着调用considerNotify，在最后调用onChange()回调，就能收到数据变化。
+
+postValue之前说过是往主线程发送事件，同时加锁保持占用，防止多线程并发竞争导致的数据错误，因为每次postValue成功都会对mPendingData重置为NOT_SET。然后想主线程发送Runnable对象，Runnable实例的run方法会执行setValue在主线程修改数据。
+
+
+
+## 6 参考资料
 * [LiveData Overview](https://developer.android.com/topic/libraries/architecture/livedata#java)
 
 * [ViewModel](https://developer.android.com/reference/android/arch/lifecycle/ViewModel.html)
