@@ -1,8 +1,8 @@
 ---
 layout:     post                    # 使用的布局（不需要改）
-title:   Android进阶(七)AMS解析          # 标题 
+title:   Android进阶(七)Activity启动流程解析          # 标题 
 subtitle:   Android advance #副标题
-date:       2019-03-21            # 时间
+date:       2019-04-02            # 时间
 author:     Kinsomy                      # 作者
 header-img:    #这篇文章标题背景图片
 catalog: true                       # 是否归档
@@ -167,6 +167,33 @@ private final boolean attachApplicationLocked(IApplicationThread thread,
     ...
     //配置启动信息 检查各种状态
     ...
+
+    if (app.isolatedEntryPoint != null) {
+                // This is an isolated process which should just call an entry point instead of
+                // being bound to an application.
+                thread.runIsolatedEntryPoint(app.isolatedEntryPoint, app.isolatedEntryPointArgs);
+            } else if (app.instr != null) {
+                thread.bindApplication(processName, appInfo, providers,
+                        app.instr.mClass,
+                        profilerInfo, app.instr.mArguments,
+                        app.instr.mWatcher,
+                        app.instr.mUiAutomationConnection, testMode,
+                        mBinderTransactionTrackingEnabled, enableTrackAllocation,
+                        isRestrictedBackupMode || !normalMode, app.persistent,
+                        new Configuration(getGlobalConfiguration()), app.compat,
+                        getCommonServicesLocked(app.isolated),
+                        mCoreSettingsObserver.getCoreSettingsLocked(),
+                        buildSerial, isAutofillCompatEnabled);
+            } else {
+                thread.bindApplication(processName, appInfo, providers, null, profilerInfo,
+                        null, null, null, testMode,
+                        mBinderTransactionTrackingEnabled, enableTrackAllocation,
+                        isRestrictedBackupMode || !normalMode, app.persistent,
+                        new Configuration(getGlobalConfiguration()), app.compat,
+                        getCommonServicesLocked(app.isolated),
+                        mCoreSettingsObserver.getCoreSettingsLocked(),
+                        buildSerial, isAutofillCompatEnabled);
+            }
     //如果正常启动模式
     if (normalMode) {
         try {
@@ -202,7 +229,8 @@ private final boolean attachApplicationLocked(IApplicationThread thread,
 }
 ```
 
-上面的过程最关键的就是`mStackSupervisor.attachApplicationLocked(app)`,ActivityStackSupervisor内部维护了大量的activity的记录栈，同时还有管理activity栈的ActivityStack实例。
+上面的过程最关键的就是`mStackSupervisor.attachApplicationLocked(app)`,ActivityStackSupervisor内部维护了大量的activity的记录栈，同时还有管理activity栈的ActivityStack实例，在该方法里面找到当前栈的栈顶activity。找到要启动的activity之后调用注释中标注的realStartActivityLocked方法。
+
 ```java
 boolean attachApplicationLocked(ProcessRecord app) throws RemoteException {
     //获得app的进程名
@@ -245,3 +273,152 @@ boolean attachApplicationLocked(ProcessRecord app) throws RemoteException {
 }
 ```
 
+realStartActivityLocked看名字显然就是我们要找的启动Activity的地方了，里面做了一些关键的操作：
+```java
+final ClientTransaction clientTransaction = ClientTransaction.obtain(app.thread,
+                        r.appToken);
+//添加LaunchActivityItem的callback
+clientTransaction.addCallback(LaunchActivityItem.obtain(new Intent(r.intent),
+        System.identityHashCode(r), r.info,
+        mergedConfiguration.getGlobalConfiguration(),
+        mergedConfiguration.getOverrideConfiguration(), r.compat,
+        r.launchedFromPackage, task.voiceInteractor, app.repProcState, r.icicle,
+        r.persistentState, results, newIntents, mService.isNextTransitionForward(),
+        profilerInfo
+final ActivityLifecycleItem lifecycleItem;
+if (andResume) {
+    lifecycleItem = ResumeActivityItem.obtain(mService.isNextTransitionForward());
+} else {
+    lifecycleItem = PauseActivityItem.obtain();
+}
+clientTransaction.setLifecycleStateRequest(lifecycleIte
+// 启动事务
+mService.getLifecycleManager().scheduleTransaction(clientTransaction);
+```
+
+在ClientTransaction里面加入的是LaunchActivityItem对象，他通过obtain构造得到。然后通过上面最后一行代码启动这个事务，调用的ActivityManagerService的LifecycleManager的scheduleTransaction方法。
+
+```java
+class ClientLifecycleManager {
+    void scheduleTransaction(ClientTransaction transaction) throws RemoteException {
+        final IApplicationThread client = transaction.getClient();
+        //调用ClientTransaction的schedule方法
+        transaction.schedule();
+        if (!(client instanceof Binder)) {
+            // If client is not an instance of Binder - it's a remote call and at this point it is
+            // safe to recycle the object. All objects used for local calls will be recycled after
+            // the transaction is executed on client in ActivityThread.
+            transaction.recycle();
+        }
+    }
+
+    ...
+}
+//ClientTransaction的schedule方法
+private IApplicationThread mClient;
+public void schedule() throws RemoteException {
+        //调用IApplicationThread的scheduleTransaction方法
+        mClient.scheduleTransaction(this);
+    }
+
+//最终实际调用了ActivityThread里面的该方法
+public void executeTransaction(ClientTransaction transaction) {
+        transaction.preExecute(this);
+        //关键代码
+        getTransactionExecutor().execute(transaction);
+        transaction.recycle();
+    }
+```
+从上面的分析最后还是回到了ActivityThread里面，第一行preExecute做了一些在客户端调度事务需要预先执行的操作，关键代码在第二行execute，是TransactionExecutor线程池的执行。
+```java
+public class TransactionExecutor {
+    /**
+     * Resolve transaction.
+     * First all callbacks will be executed in the order they appear in the list. If a callback
+     * requires a certain pre- or post-execution state, the client will be transitioned accordingly.
+     * Then the client will cycle to the final lifecycle state if provided. Otherwise, it will
+     * either remain in the initial state, or last state needed by a callback.
+     */
+    public void execute(ClientTransaction transaction) {
+        final IBinder token = transaction.getActivityToken();
+        log("Start resolving transaction for client: " + mTransactionHandler + ", token: " + token);
+
+        executeCallbacks(transaction);
+
+        executeLifecycleState(transaction);
+        mPendingActions.clear();
+        log("End resolving transaction");
+    }
+}
+
+public void executeCallbacks(ClientTransaction transaction) {
+    ...
+    item.execute(mTransactionHandler, token, mPendingActions);
+}
+
+public void execute(ClientTransactionHandler client, IBinder token,
+        PendingTransactionActions pendingActions) {
+    //通知系统activityStart
+    Trace.traceBegin(TRACE_TAG_ACTIVITY_MANAGER, "activityStart");
+    ActivityClientRecord r = new ActivityClientRecord(token, mIntent, mIdent, mInfo,
+            mOverrideConfig, mCompatInfo, mReferrer, mVoiceInteractor, mState, mPersistentState,
+            mPendingResults, mPendingNewIntents, mIsForward,
+            mProfilerInfo, client);
+    //调用ActivityThread的handleLaunchActivity
+    client.handleLaunchActivity(r, pendingActions, null /* customIntent */);
+    Trace.traceEnd(TRACE_TAG_ACTIVITY_MANAGER);
+}
+```
+上面在realStartActivityLocked方法里面我们调用addCallback传入的是LaunchActivityItem，这里excute方法里面执行了executeCallbacks方法，就会执行LaunchActivityItem的execute方法。方法内首先向系统发送"activityStart"通知，然后调用ClientTransactionHandler的handleLaunchActivity，因为ActivityThread类集成了ClientTransactionHandler，所以实际上还是调用了ActivityThread的handleLaunchActivity方法，handleLaunchActivity里面调用了performLaunchActivity创建要启动的Activity。
+
+```java
+private Activity performLaunchActivity(ActivityClientRecord r, Intent customIntent) {
+        ...
+        //获得类加载器
+        java.lang.ClassLoader cl = appContext.getClassLoader();
+        //Instrumentation构造Activity
+        activity = mInstrumentation.newActivity(
+                cl, component.getClassName(), r.intent);
+        StrictMode.incrementExpectedActivityCount(activity.getClass());
+        r.intent.setExtrasClassLoader(cl);
+        r.intent.prepareToEnterProcess();
+        if (r.state != null) {
+            r.state.setClassLoader(cl);
+        }
+        ...
+
+        Application app = r.packageInfo.makeApplication(false, mInstrumentation);
+        if (activity != null) {
+            CharSequence title = r.activityInfo.loadLabel(appContext.getPackageManager());
+            Configuration config = new Configuration(mCompatConfiguration);
+            if (r.overrideConfig != null) {
+                config.updateFrom(r.overrideConfig);
+            }
+            Window window = null;
+            appContext.setOuterContext(activity);
+            //activity初始化
+            activity.attach(appContext, this, getInstrumentation(), r.token,
+                    r.ident, app, r.intent, r.activityInfo, title, r.parent,
+                    r.embeddedID, r.lastNonConfigurationInstances, config,
+                    r.referrer, r.voiceInteractor, window, r.configCallback);
+            ...
+            //回调onCreate生命周期
+            if (r.isPersistable()) {
+                mInstrumentation.callActivityOnCreate(activity, r.state, r.persistentState);
+            } else {
+                mInstrumentation.callActivityOnCreate(activity, r.state);
+            }
+            r.activity = activity;
+        }
+        r.setState(ON_CREATE);
+        mActivities.put(r.token, r);
+   
+    return activity;
+}
+```
+performLaunchActivity通过类加载器委托mInstrumentation构造出要启动的Activity，然后做了Activity的相关初始化，最后调用callActivityOnCreate执行onCreate相关操作，回调onCreate生命周期，这样就完成了Activity的启动流程。
+
+## 4 参考资料
+* [Activity启动流程（下）](https://blog.csdn.net/mingyunxiaohai/article/details/88232680)
+
+* [Android App启动流程](https://www.jianshu.com/p/49797b2ade02)
