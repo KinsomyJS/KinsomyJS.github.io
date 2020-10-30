@@ -15,7 +15,7 @@ WorkManager是Android Jetpack的一个库，可以在达到约束条件的情况
 
 WorkManager又不完全是一个全新的后台任务框架，它的底层依然使用了Android之前的API，会根据设备的版本去选择调用调用JobScheduler或者Firebase JobDispatcher,或者AlarmManager来执行任务。上层封装了一致性API，让开发者不用再为设备版本不同去考虑不同的后台任务方案。
 
-![](https://developer.android.com/images/topic/libraries/architecture/workmanager/overview-criteria.png)
+![](https://pic2.zhimg.com/80/v2-99d2d71bb866c97bb8224b3b7179c7b1_720w.jpg)
 
 除此之外，WorkManager还具备很多优点：
 * 工作约束
@@ -112,10 +112,10 @@ WorkManager.getInstance(mContext).enqueueUniquePeriodicWork(uniqueWorkName,exist
 
 ### 3.1 Worker 
 一次性Worker的生命周期如图所示：
-![](https://developer.android.com/images/topic/libraries/architecture/workmanager/how-to/one-time-work-flow.png)
+![](https://pic1.zhimg.com/80/v2-f222113b1f81629f3e891ac4b3106aa8_720w.jpg)
 
 定期Worker的生命周期如图缩视：
-![](https://developer.android.com/images/topic/libraries/architecture/workmanager/how-to/periodic-work-states.png)
+![](https://pic1.zhimg.com/80/v2-fd807425854dae019e6254347b7f94a0_720w.jpg)
 
 ```java
 public abstract class Worker extends ListenableWorker {
