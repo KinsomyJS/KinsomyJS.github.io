@@ -211,5 +211,264 @@ public class EnqueueRunnable implements Runnable {
 ```
 既然是一个Runnable实例，那么首先是要看run方法，run方法先去循环判断是否当前的任务id是否在它任务链上层被访问过，如果是，那就是存在循环重复执行的情况，就直接抛出异常；如果不存在上述情况，就调用addToDatabase方法，是将WorkSpec添加到数据库，然后调用processContinuation去检查是否有需要调度的任务，先获取当前workContinuation的parents，如果parents不为空并且没有被执行过，那就递归调用先去按序执行parent，执行的方法就是enqueueContinuation，这个方法调用了enqueueWorkWithPrerequisites，对任务进行排队，同时跟踪任务的先前任务，一旦找到需要执行的，needsScheduling会返回true，就把RescheduleReceiver的广播接收打开，然后调用scheduleWorkInBackground方法执行work，如果没有出现异常，将会在执行结束后将状态设为SUCCESS，否则在catch捕获异常时设为FAILURE。
 
+### 3.5 scheduleWorkInBackground
 
+```java
+@VisibleForTesting
+public void scheduleWorkInBackground() {
+    WorkManagerImpl workManager = mWorkContinuation.getWorkManagerImpl();
+    Schedulers.schedule(
+            workManager.getConfiguration(),
+            workManager.getWorkDatabase(),
+            workManager.getSchedulers());
+}
+```
+scheduleWorkInBackground调用了Schedulers.schedule方法：
+```java
+public static void schedule(
+            @NonNull Configuration configuration,
+            @NonNull WorkDatabase workDatabase,
+            List<Scheduler> schedulers) {
+        if (schedulers == null || schedulers.size() == 0) {
+            return;
+        }
 
+        WorkSpecDao workSpecDao = workDatabase.workSpecDao();
+        List<WorkSpec> eligibleWorkSpecsForLimitedSlots;
+        List<WorkSpec> allEligibleWorkSpecs;
+
+        workDatabase.beginTransaction();
+        try {
+            // 受调度限制的workSpec
+            eligibleWorkSpecsForLimitedSlots = workSpecDao.getEligibleWorkForScheduling(
+                    configuration.getMaxSchedulerLimit());
+
+            // 不受限制的workSpec
+            allEligibleWorkSpecs = workSpecDao.getAllEligibleWorkSpecsForScheduling();
+
+            if (eligibleWorkSpecsForLimitedSlots != null
+                    && eligibleWorkSpecsForLimitedSlots.size() > 0) {
+                long now = System.currentTimeMillis();
+
+                for (WorkSpec workSpec : eligibleWorkSpecsForLimitedSlots) {
+                    workSpecDao.markWorkSpecScheduled(workSpec.id, now);
+                }
+            }
+            workDatabase.setTransactionSuccessful();
+        } finally {
+            workDatabase.endTransaction();
+        }
+
+        if (eligibleWorkSpecsForLimitedSlots != null
+                && eligibleWorkSpecsForLimitedSlots.size() > 0) {
+
+            WorkSpec[] eligibleWorkSpecsArray =
+                    new WorkSpec[eligibleWorkSpecsForLimitedSlots.size()];
+            eligibleWorkSpecsArray =
+                    eligibleWorkSpecsForLimitedSlots.toArray(eligibleWorkSpecsArray);
+
+            // Delegate to the underlying schedulers.
+            for (Scheduler scheduler : schedulers) {
+                if (scheduler.hasLimitedSchedulingSlots()) {
+                    scheduler.schedule(eligibleWorkSpecsArray);
+                }
+            }
+        }
+
+        if (allEligibleWorkSpecs != null && allEligibleWorkSpecs.size() > 0) {
+            WorkSpec[] enqueuedWorkSpecsArray = new WorkSpec[allEligibleWorkSpecs.size()];
+            enqueuedWorkSpecsArray = allEligibleWorkSpecs.toArray(enqueuedWorkSpecsArray);
+            // Delegate to the underlying schedulers.
+            for (Scheduler scheduler : schedulers) {
+                if (!scheduler.hasLimitedSchedulingSlots()) {
+                    scheduler.schedule(enqueuedWorkSpecsArray);
+                }
+            }
+        }
+    }
+```
+schedule方法首先将受调度限制（没有被调度过的）eligibleWorkSpecsForLimitedSlots和不受调度限制的allEligibleWorkSpecs集合找到，然后将eligibleWorkSpecsForLimitedSlots标记为被调度过。接着循环遍历eligibleWorkSpecsForLimitedSlots调用 scheduler.schedule(eligibleWorkSpecsArray)执行workSpec，然后同样的循环调度allEligibleWorkSpecs。
+这里的schedule是个代理方法，实际上会去调用的是GreedyScheduler类的schedule方法。
+
+```java
+public class GreedyScheduler implements Scheduler, WorkConstraintsCallback, ExecutionListener {
+@Override
+    public void schedule(@NonNull WorkSpec... workSpecs) {
+        if (mIsMainProcess == null) {
+            mIsMainProcess = TextUtils.equals(mContext.getPackageName(), getProcessName());
+        }
+
+        if (!mIsMainProcess) {
+            Logger.get().info(TAG, "Ignoring schedule request in non-main process");
+            return;
+        }
+
+        registerExecutionListenerIfNeeded();
+
+        // Keep track of the list of new WorkSpecs whose constraints need to be tracked.
+        // Add them to the known list of constrained WorkSpecs and call replace() on
+        // WorkConstraintsTracker. That way we only need to synchronize on the part where we
+        // are updating mConstrainedWorkSpecs.
+        Set<WorkSpec> constrainedWorkSpecs = new HashSet<>();
+        Set<String> constrainedWorkSpecIds = new HashSet<>();
+
+        for (WorkSpec workSpec : workSpecs) {
+            long nextRunTime = workSpec.calculateNextRunTime();
+            long now = System.currentTimeMillis();
+            if (workSpec.state == WorkInfo.State.ENQUEUED) {
+                if (now < nextRunTime) {
+                    // Future work
+                    if (mDelayedWorkTracker != null) {
+                        mDelayedWorkTracker.schedule(workSpec);
+                    }
+                } else if (workSpec.hasConstraints()) {
+                    if (SDK_INT >= 23 && workSpec.constraints.requiresDeviceIdle()) {
+                        // Ignore requests that have an idle mode constraint.
+                        Logger.get().debug(TAG,
+                                String.format("Ignoring WorkSpec %s, Requires device idle.",
+                                        workSpec));
+                    } else if (SDK_INT >= 24 && workSpec.constraints.hasContentUriTriggers()) {
+                        // Ignore requests that have content uri triggers.
+                        Logger.get().debug(TAG,
+                                String.format("Ignoring WorkSpec %s, Requires ContentUri triggers.",
+                                        workSpec));
+                    } else {
+                        constrainedWorkSpecs.add(workSpec);
+                        constrainedWorkSpecIds.add(workSpec.id);
+                    }
+                } else {
+                    Logger.get().debug(TAG, String.format("Starting work for %s", workSpec.id));
+                    mWorkManagerImpl.startWork(workSpec.id);
+                }
+            }
+        }
+
+        // onExecuted() which is called on the main thread also modifies the list of mConstrained
+        // WorkSpecs. Therefore we need to lock here.
+        synchronized (mLock) {
+            if (!constrainedWorkSpecs.isEmpty()) {
+                Logger.get().debug(TAG, String.format("Starting tracking for [%s]",
+                        TextUtils.join(",", constrainedWorkSpecIds)));
+                mConstrainedWorkSpecs.addAll(constrainedWorkSpecs);
+                mWorkConstraintsTracker.replace(mConstrainedWorkSpecs);
+            }
+        }
+    }
+}
+```
+ * 1.首先判断是否在主进程，如果不是在主进程执行的调度任务，则直接return，忽略掉该请求。
+ * 2.遍历方法参数传入的workSpecs数组，计算每个workSpecs的下一次可以被执行时间nextRunTime
+ * 3.如果当前时间早于nextRunTime，就把他加入到mDelayedWorkTracker中延迟执行
+ * 4.如果workSpec有限制则根据sdk版本做不同的处理
+ * 5.如果上述都不符合，则可以开始任务，调用mWorkManagerImpl.startWork(workSpec.id)
+
+```java 
+ public boolean startWork(
+            @NonNull String id,
+            @Nullable WorkerParameters.RuntimeExtras runtimeExtras) {
+
+        WorkerWrapper workWrapper;
+        synchronized (mLock) {
+            // Work may get triggered multiple times if they have passing constraints
+            // and new work with those constraints are added.
+            if (isEnqueued(id)) {
+                Logger.get().debug(
+                        TAG,
+                        String.format("Work %s is already enqueued for processing", id));
+                return false;
+            }
+
+            workWrapper =
+                    new WorkerWrapper.Builder(
+                            mAppContext,
+                            mConfiguration,
+                            mWorkTaskExecutor,
+                            this,
+                            mWorkDatabase,
+                            id)
+                            .withSchedulers(mSchedulers)
+                            .withRuntimeExtras(runtimeExtras)
+                            .build();
+            ListenableFuture<Boolean> future = workWrapper.getFuture();
+            future.addListener(
+                    new FutureListener(this, id, future),
+                    mWorkTaskExecutor.getMainThreadExecutor());
+            mEnqueuedWorkMap.put(id, workWrapper);
+        }
+        mWorkTaskExecutor.getBackgroundExecutor().execute(workWrapper);
+        Logger.get().debug(TAG, String.format("%s: processing %s", getClass().getSimpleName(), id));
+        return true;
+    }
+
+```
+跟着startWork方法一直追进去，会找到Processor的startWork方法，work被WorkerWrapper包装了起来，WorkerWrapper是一个runnable,mWorkTaskExecutor.getBackgroundExecutor().execute(workWrapper)去执行这个runnable。
+
+进到WorkerWrapper的run()方法里去看,在run里面回去调用worker的startWork方法，这个方法会执行worker的doWork方法，也就是我们自己实现的doWork逻辑，同时会监听Future的回调，把任务结果result回调回去。
+```java 
+public void run() {
+    mTags = mWorkTagDao.getTagsForWorkSpecId(mWorkSpecId);
+    mWorkDescription = createWorkDescription(mTags);
+    runWorker();
+}
+
+private void runWorker() {
+    ...
+    if (trySetRunning()) {
+            if (tryCheckForInterruptionAndResolve()) {
+                return;
+            }
+
+            final SettableFuture<ListenableWorker.Result> future = SettableFuture.create();
+            // Call mWorker.startWork() on the main thread.
+            mWorkTaskExecutor.getMainThreadExecutor()
+                    .execute(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                Logger.get().debug(TAG, String.format("Starting work for %s",
+                                        mWorkSpec.workerClassName));
+                                mInnerFuture = mWorker.startWork();
+                                future.setFuture(mInnerFuture);
+                            } catch (Throwable e) {
+                                future.setException(e);
+                            }
+
+                        }
+                    });
+            final String workDescription = mWorkDescription;
+            future.addListener(new Runnable() {
+                @Override
+                @SuppressLint("SyntheticAccessor")
+                public void run() {
+                    try {
+                        // If the ListenableWorker returns a null result treat it as a failure.
+                        ListenableWorker.Result result = future.get();
+                        if (result == null) {
+                            Logger.get().error(TAG, String.format(
+                                    "%s returned a null result. Treating it as a failure.",
+                                    mWorkSpec.workerClassName));
+                        } else {
+                            Logger.get().debug(TAG, String.format("%s returned a %s result.",
+                                    mWorkSpec.workerClassName, result));
+                            mResult = result;
+                        }
+                    } catch (CancellationException exception) {
+                        // Cancellations need to be treated with care here because innerFuture
+                        // cancellations will bubble up, and we need to gracefully handle that.
+                        Logger.get().info(TAG, String.format("%s was cancelled", workDescription),
+                                exception);
+                    } catch (InterruptedException | ExecutionException exception) {
+                        Logger.get().error(TAG,
+                                String.format("%s failed because it threw an exception/error",
+                                        workDescription), exception);
+                    } finally {
+                        onWorkFinished();
+                    }
+                }
+            }, mWorkTaskExecutor.getBackgroundExecutor());
+        ...
+    }
+    ...
+}
+```
+这里的代码还是很复杂的，doWork方法的调用逻辑很深，并且要完全读懂里面的各种逻辑还需要很多时间。
