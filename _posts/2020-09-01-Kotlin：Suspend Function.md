@@ -1,6 +1,6 @@
 ---
 layout:     post                    # 使用的布局（不需要改）
-title:   Kotlin(一)Suspend Function          # 标题 
+title:   Kotlin：Suspend Function          # 标题 
 subtitle:   Suspend Function 和 SuspendCancellableCoroutine #副标题
 date:       2020-09-01            # 时间
 author:     Kinsomy                      # 作者
